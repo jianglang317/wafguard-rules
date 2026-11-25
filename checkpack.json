@@ -1,0 +1,232 @@
+{
+  "pack": "wafguard-sec",
+  "version": 20261125,
+  "updated": "2026-11-25",
+  "notes": "23 项基线迁移 + 首批 5 条漏洞型检查项（OpenSSH/Nginx/Node.js/MySQL/PHP 版本区间比对）",
+  "checks": [
+    {
+      "key": "cookie", "level": "中危", "title": "会话 Cookie 缺 HttpOnly",
+      "check_desc": "GET 首页，检查 Set-Cookie 是否带 HttpOnly/SameSite 属性（PbootCMS 会用 Basic.php 覆盖 php.ini）",
+      "fix_desc": "改 core/basic/Basic.php 的 session_set_cookie_params 末参 false→true（自动处理 chattr 锁）",
+      "fixable": 1, "probe": "cookie_httponly",
+      "params": {"path": "/admin.php", "method": "POST", "ignore_cookies": ["lg"]},
+      "fix_type": "basic_php", "sort": 10, "grp": "web"
+    },
+    {
+      "key": "headers", "level": "中危", "title": "安全响应头缺失",
+      "check_desc": "GET 首页，检查 XFO/XCTO/Referrer-Policy/CSP 四头是否输出",
+      "fix_desc": "站点 vhost 写入 4 条 add_header（插在 PHP include 之前）",
+      "fixable": 1, "probe": "headers_missing",
+      "params": {"path": "/"},
+      "fix_type": "vhost_base", "sort": 20, "grp": "web"
+    },
+    {
+      "key": "core_php", "level": "低危", "title": "核心路径 PHP 可直访",
+      "check_desc": "GET /core/basic/Kernel.php，PbootCMS 站点 200 即命中（暴露框架路径利于画像）",
+      "fix_desc": "vhost 写入 location ~* ^/(core|apps)/ { deny all; }",
+      "fixable": 1, "probe": "http_status",
+      "params": {"path": "/core/basic/Kernel.php", "expect_bad": 200, "only_cms": "pbootcms"},
+      "fix_type": "vhost_base", "sort": 30, "grp": "web"
+    },
+    {
+      "key": "admin", "level": "中危", "title": "管理后台 /admin.php 公开暴露",
+      "check_desc": "GET /admin.php，200 即命中（可被打码平台绕过验证码后爆破）",
+      "fix_desc": "人工处置：WAFGuard 站点规则限 IP / 后台入口改名 / POST 失败频控",
+      "fixable": 0, "probe": "http_status",
+      "params": {"path": "/admin.php", "expect_bad": 200},
+      "fix_type": "manual", "sort": 40, "grp": "web"
+    },
+    {
+      "key": "api_404", "level": "低危", "title": "API 入口 /api.php 开放",
+      "check_desc": "GET /api.php，200 即命中（接口攻击面可探测）",
+      "fix_desc": "确认未使用 PbootCMS API 后，vhost 写入 location = /api.php { return 404; }",
+      "fixable": 1, "probe": "http_status",
+      "params": {"path": "/api.php", "expect_bad": 200},
+      "fix_type": "vhost_api404", "sort": 50, "grp": "web"
+    },
+    {
+      "key": "sensitive", "level": "高危", "title": "敏感文件泄露",
+      "check_desc": "GET /.git/config、/.env、/composer.lock，任一 200 即命中（源码/配置泄露）",
+      "fix_desc": "人工处置：nginx deny 敏感路径并排查泄露范围",
+      "fixable": 0, "probe": "http_status",
+      "params": {"paths": ["/.git/config", "/.env", "/composer.lock"], "expect_bad": 200},
+      "fix_type": "manual", "sort": 60, "grp": "web"
+    },
+    {
+      "key": "waf_cover", "level": "高危", "title": "WAF 未挂载到站点",
+      "check_desc": "检查 extension/<站点>/wafguard.conf 是否存在且含 access_by_lua（新站点/反代漏挂 WAF 会全程裸奔）",
+      "fix_desc": "调用 waf_engine enable <site> 写入挂载 conf（幂等）后 nginx reload",
+      "fixable": 1, "probe": "waf_cover",
+      "params": {},
+      "fix_type": "waf_cover", "sort": 70, "grp": "web"
+    },
+    {
+      "key": "https_missing", "level": "低危", "title": "未启用 HTTPS（明文 HTTP）",
+      "check_desc": "读站点 vhost：listen 443 与 ssl_certificate 均缺失即命中（传输层明文可被嗅探）",
+      "fix_desc": "人工处置：宝塔一键 SSL（Let's Encrypt），启用后补 HSTS 与 cookie_secure",
+      "fixable": 0, "probe": "vhost_text",
+      "params": {"require": ["listen[^;]*443", "ssl_certificate"]},
+      "fix_type": "manual", "sort": 80, "grp": "web"
+    },
+    {
+      "key": "dir_listing", "level": "中危", "title": "目录列表开启",
+      "check_desc": "GET /uploads/，响应 200 且含 Index of / 即命中（autoindex on 暴露目录结构便于攻击者画像）",
+      "fix_desc": "vhost 写入 autoindex off 幂等块（防回归）",
+      "fixable": 1, "probe": "dir_listing",
+      "params": {"path": "/uploads/"},
+      "fix_type": "vhost_dirlist", "sort": 90, "grp": "web"
+    },
+    {
+      "key": "backup_files", "level": "中危", "title": "备份/源文件可下载",
+      "check_desc": "GET /index.php~、/index.php.bak、/config.php.bak、/db.sql 等常见备份后缀，200 即命中",
+      "fix_desc": "vhost 写入备份后缀 deny 幂等块（bak/old/sql/swp/save/orig/rej/~）",
+      "fixable": 1, "probe": "http_status",
+      "params": {"paths": ["/index.php~", "/index.php.bak", "/config.php.bak", "/db.sql", "/.env.bak", "/.DS_Store"], "expect_bad": 200},
+      "fix_type": "vhost_backup", "sort": 100, "grp": "web"
+    },
+    {
+      "key": "error_stack", "level": "低危", "title": "错误页堆栈泄露",
+      "check_desc": "GET 一个不存在的页面，响应体含 Fatal error / Stack trace / /www/wwwroot 即命中（暴露服务器路径与代码结构）",
+      "fix_desc": "人工处置：php.ini display_errors=Off + vhost error_page 自定义错误页",
+      "fixable": 0, "probe": "error_stack",
+      "params": {"path": "/__wafguard_stack_probe.html"},
+      "fix_type": "manual", "sort": 110, "grp": "web"
+    },
+    {
+      "key": "server_tokens", "level": "低危", "title": "Server 头暴露版本号",
+      "check_desc": "响应头 Server 含 nginx/<版本号> 即命中（精确版本利于定向利用已知漏洞）",
+      "fix_desc": "人工处置：全局 server_tokens off（涉及 nginx 主配置，统一人工确认）",
+      "fixable": 0, "probe": "server_header",
+      "params": {},
+      "fix_type": "manual", "sort": 120, "grp": "web"
+    },
+    {
+      "key": "component_eol", "level": "低危", "title": "组件版本老化",
+      "check_desc": "读本机 nginx/PHP 版本，按静态生命周期规则判定（nginx<1.20、PHP<8.0 判过旧；规则内置不联网）",
+      "fix_desc": "人工处置：宝塔软件商店升级对应组件；升级前备份站点与数据库",
+      "fixable": 0, "probe": "component_version",
+      "params": {},
+      "fix_type": "manual", "sort": 130, "grp": "sys"
+    },
+    {
+      "key": "spath", "level": "中危", "title": "防跨站攻击未开启",
+      "check_desc": "检查站点根 .user.ini 是否存在（宝塔防跨站=open_basedir 标志文件，口径对齐宝塔 sw_site_spath），缺失即命中；仅 PHP 站点检测",
+      "fix_desc": "写入 .user.ini（open_basedir=站点根:/tmp/）并 reload PHP-FPM（对齐宝塔行为）",
+      "fixable": 1, "probe": "spath",
+      "params": {},
+      "fix_type": "vhost_spath", "sort": 140, "grp": "web"
+    },
+    {
+      "key": "php_expose", "level": "低危", "title": "PHP 版本泄露（X-Powered-By）",
+      "check_desc": "读 /www/server/php/<ver>/etc/php.ini，expose_php=On 即命中（响应头暴露 PHP 精确版本，口径对齐宝塔 sw_php_expose）；仅 PHP 站点检测",
+      "fix_desc": "php.ini expose_php 改 Off 并 reload PHP-FPM",
+      "fixable": 1, "probe": "php_ini_flag",
+      "params": {"flag": "expose_php"},
+      "fix_type": "php_ini_flag", "sort": 150, "grp": "sys"
+    },
+    {
+      "key": "ssl_expire", "level": "中危", "title": "SSL 证书即将过期",
+      "check_desc": "解析 vhost ssl_certificate 指向的证书 notAfter，剩余 <30 天命中（<7 天升级高危）；未启用 HTTPS 的站点不适用（由 https_missing 覆盖）",
+      "fix_desc": "人工处置：宝塔 SSL 页续签证书（Let's Encrypt 自动续期）",
+      "fixable": 0, "probe": "ssl_expire",
+      "params": {"days": 30},
+      "fix_type": "manual", "sort": 160, "grp": "web"
+    },
+    {
+      "key": "log_keep", "level": "低危", "title": "站点日志留存不足 6 个月",
+      "check_desc": "查宝塔 crontab 表日志切割任务（sType=logs）：无任务或保存份数 <180 即命中（网安法第二十一条要求 ≥6 个月，口径对齐宝塔 sw_site_logs）",
+      "fix_desc": "人工处置：宝塔计划任务添加日志切割（每天 1 次，保存 ≥180 份）",
+      "fixable": 0, "probe": "log_keep",
+      "params": {},
+      "fix_type": "manual", "sort": 170, "grp": "web"
+    },
+    {
+      "key": "ssh_root", "level": "高危", "title": "SSH 允许 root 密码登录",
+      "check_desc": "读 /etc/ssh/sshd_config，PermitRootLogin=yes 即命中（口径对齐宝塔 sw_ssh_root；未配置时默认 prohibit-password 视为安全）",
+      "fix_desc": "人工处置：sshd_config 改 PermitRootLogin prohibit-password 后 systemctl reload sshd（改错会断远程连接，务必保留已登录会话验证）",
+      "fixable": 0, "probe": "sshd_config",
+      "params": {"check": "root"},
+      "fix_type": "manual", "sort": 180, "grp": "sys"
+    },
+    {
+      "key": "ssh_port", "level": "低危", "title": "SSH 使用默认端口 22",
+      "check_desc": "读 /etc/ssh/sshd_config，无 Port 行或 Port=22 即命中（默认端口承受全网扫描爆破，口径对齐宝塔 sw_ssh_port）",
+      "fix_desc": "人工处置：sshd_config 改非标准端口并防火墙放行新端口后 reload（先放行再改，防断连）",
+      "fixable": 0, "probe": "sshd_config",
+      "params": {"check": "port"},
+      "fix_type": "manual", "sort": 190, "grp": "sys"
+    },
+    {
+      "key": "firewall", "level": "高危", "title": "系统防火墙未运行",
+      "check_desc": "依次探测 firewalld / ufw / iptables 规则，全部未运行且无自定义规则即命中（口径对齐宝塔 sw_firewall_open）",
+      "fix_desc": "人工处置：宝塔【安全】页启用防火墙，放行面板/SSH/业务端口后再开启",
+      "fixable": 0, "probe": "firewall",
+      "params": {},
+      "fix_type": "manual", "sort": 200, "grp": "sys"
+    },
+    {
+      "key": "perm_777", "level": "中危", "title": "站点目录存在 777 权限文件",
+      "check_desc": "遍历站点目录树，权限恰为 777 的文件/目录即命中（任意用户可写，WebShell 落地温床；最多列 20 项）",
+      "fix_desc": "人工处置：按清单 chmod 收敛（目录 755 / 文件 644）；执行前确认应用无特殊写权限需求",
+      "fixable": 0, "probe": "perm",
+      "params": {"max": 20},
+      "fix_type": "manual", "sort": 210, "grp": "sys"
+    },
+    {
+      "key": "php_display_errors", "level": "低危", "title": "php.ini display_errors 开启",
+      "check_desc": "读 /www/server/php/<ver>/etc/php.ini，display_errors=On 即命中（错误详情泄露路径与代码结构，生产环境应 Off）；仅 PHP 站点检测",
+      "fix_desc": "php.ini display_errors 改 Off 并 reload PHP-FPM",
+      "fixable": 1, "probe": "php_ini_flag",
+      "params": {"flag": "display_errors"},
+      "fix_type": "php_ini_flag", "sort": 220, "grp": "sys"
+    },
+    {
+      "key": "php_allow_url_include", "level": "高危", "title": "php.ini allow_url_include 开启",
+      "check_desc": "读 /www/server/php/<ver>/etc/php.ini，allow_url_include=On 即命中（远程文件包含可直接 RCE，必须关闭）；仅 PHP 站点检测",
+      "fix_desc": "php.ini allow_url_include 改 Off 并 reload PHP-FPM",
+      "fixable": 1, "probe": "php_ini_flag",
+      "params": {"flag": "allow_url_include"},
+      "fix_type": "php_ini_flag", "sort": 230, "grp": "sys"
+    },
+    {
+      "key": "openssh_regresshion", "level": "高危", "title": "OpenSSH 疑似存在 CVE-2024-6387（regreSSHion）",
+      "check_desc": "ssh -V 版本 <9.8 即命中（8.5p1~9.7p1 存在信号处理器竞态 RCE，修复版本 9.8p1，参考 NVD/官方公告）。注意：发行版可能已回补丁而不升版本号，确认为误报时在台账忽略该项",
+      "fix_desc": "人工处置：系统包管理器更新 openssh（yum/dnf/apt upgrade）或安装 ≥9.8p1；重启 sshd 前保留已登录会话验证",
+      "fixable": 0, "probe": "component_version",
+      "params": {"items": [{"name": "OpenSSH", "cmd": ["ssh", "-V"], "regex": "OpenSSH_([\\d.]+)", "min_ok": "9.8", "cve": "CVE-2024-6387"}]},
+      "fix_type": "manual", "sort": 240, "grp": "sys"
+    },
+    {
+      "key": "nginx_resolver_cve", "level": "中危", "title": "Nginx 疑似存在 CVE-2021-23017（DNS 解析器越界写）",
+      "check_desc": "nginx -v 版本 <1.20.1 即命中（1.20.1/1.21.0 修复，转发器 off-by-one 可致 RCE/数据篡改，参考官方公告）",
+      "fix_desc": "人工处置：宝塔软件商店升级 Nginx 至 ≥1.20.1（升级前备份站点配置并 nginx -t 验证）",
+      "fixable": 0, "probe": "component_version",
+      "params": {"items": [{"name": "Nginx", "cmd": ["/www/server/nginx/sbin/nginx", "-v"], "regex": "nginx/([\\d.]+)", "min_ok": "1.20.1", "cve": "CVE-2021-23017"}]},
+      "fix_type": "manual", "sort": 250, "grp": "sys"
+    },
+    {
+      "key": "node_cve_2024_21896", "level": "高危", "title": "Node.js 疑似存在 CVE-2024-21896（权限模型绕过）",
+      "check_desc": "node -v 版本 <20.12.2 即命中（修复版本 20.12.2/21.6.2，LTS 18.x 需 ≥18.19.1；多版本并存时以运行版本为准）。未安装 Node.js 时自动跳过",
+      "fix_desc": "人工处置：升级 Node.js 至官方修复版本（18.19.1 / 20.12.2 / 21.6.2 及以上），参考官方安全公告",
+      "fixable": 0, "probe": "component_version",
+      "params": {"items": [{"name": "Node.js", "cmd": ["bash", "-c", "command -v node >/dev/null 2>&1 && node -v || true"], "regex": "v?([\\d.]+)", "min_ok": "20.12.2", "cve": "CVE-2024-21896"}]},
+      "fix_type": "manual", "sort": 260, "grp": "sys"
+    },
+    {
+      "key": "mysql_57_eol", "level": "中危", "title": "MySQL 5.7 已停止官方安全维护",
+      "check_desc": "mysql --version 版本 <8.0 即命中（MySQL 5.7 于 2023-10 官方 EOL，此后漏洞不再修复；MariaDB 输出不同不误报）。未安装/不在 PATH 时自动跳过",
+      "fix_desc": "人工处置：升级到 MySQL 8.0（宝塔软件商店），升级前全量备份数据库并验证兼容性",
+      "fixable": 0, "probe": "component_version",
+      "params": {"items": [{"name": "MySQL", "cmd": ["bash", "-c", "command -v mysql >/dev/null 2>&1 && mysql --version || true"], "regex": "Ver\\s+([\\d.]+)", "min_ok": "8.0", "cve": "EOL-5.7"}]},
+      "fix_type": "manual", "sort": 270, "grp": "sys"
+    },
+    {
+      "key": "php_82_eol", "level": "中危", "title": "PHP 版本已停止安全维护（<8.2）",
+      "check_desc": "宝塔已安装的 PHP 大版本 <8.2 即命中（php.net 支持期表：8.1 已于 2025-12 终止安全维护，8.2 支持至 2026-12；多版本以最新安装版为准）",
+      "fix_desc": "人工处置：宝塔软件商店安装受支持版本并切换站点 PHP 版本（切换前验证应用兼容性）",
+      "fixable": 0, "probe": "component_version",
+      "params": {"items": [{"name": "PHP", "cmd": ["bash", "-c", "b=$(ls -1d /www/server/php/*/bin/php 2>/dev/null | sort -V | tail -1); [ -n \"$b\" ] && \"$b\" -v || true"], "regex": "PHP\\s+([\\d.]+)", "min_ok": "8.2", "cve": "EOL-8.1"}]},
+      "fix_type": "manual", "sort": 280, "grp": "sys"
+    }
+  ]
+}
